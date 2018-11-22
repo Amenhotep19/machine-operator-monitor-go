@@ -19,10 +19,10 @@ const (
 	name = "machine-operator-monitor"
 	// topic is MQTT topic
 	topic = "machine/safety"
-	// alertNotWatching contains text to display when operator is not watching machine
-	alertNotWatching = "Operator not watching machine: PAUSE MACHINE!"
-	// alertAngry contains text to display when operator is angry when operating machine
-	alertAngry = "Operator angry at the machine: PAUSE MACHINE!"
+	// alertWatching contains text to display when operator is not watching the machine
+	alertWatching = "Operator not watching: PAUSE THE MACHINE!"
+	// alertAngry contains text to display when operator is operating machine angrily
+	alertAngry = "Operator angry: PAUSE THE MACHINE!"
 )
 
 var (
@@ -44,10 +44,14 @@ var (
 	sentConfidence float64
 	// poseModel is path to .bin file of pose detection model
 	poseModel string
-	// sentConfig is path to .xml file of pose detection model configuration
+	// poseConfig is path to .xml file of pose detection model configuration
 	poseConfig string
 	// poseConfidence is confidence threshold for pose detection model
 	poseConfidence float64
+	// angryTimeout is maximum time operator is allowed to be angry operating machine for
+	angryTimeout time.Duration
+	// watchTimeout is maximum time operator is allowed not to be watching machine for
+	watchTimeout time.Duration
 	// backend is inference backend
 	backend int
 	// target is inference target
@@ -59,7 +63,7 @@ var (
 )
 
 func init() {
-	flag.IntVar(&deviceID, "device", 0, "Camera device ID")
+	flag.IntVar(&deviceID, "device", -1, "Camera device ID")
 	flag.StringVar(&input, "input", "", "Path to image or video file")
 	flag.StringVar(&faceModel, "face-model", "", "Path to .bin file of face detection model")
 	flag.StringVar(&faceConfig, "face-config", "", "Path to .xml file of face model configuration")
@@ -70,6 +74,8 @@ func init() {
 	flag.StringVar(&poseModel, "pose-model", "", "Path to .bin file of pose detection model")
 	flag.StringVar(&poseConfig, "pose-config", "", "Path to .xml file of pose detection model configuration")
 	flag.Float64Var(&poseConfidence, "pose-confidence", 0.5, "Confidence threshold for pose detection")
+	flag.DurationVar(&angryTimeout, "angry-timeout", 5*time.Second, "Maximum time operator is allowed to be angry for")
+	flag.DurationVar(&watchTimeout, "watch-timeout", 5*time.Second, "Maximum time operator is allowed to not be watching the machine for")
 	flag.IntVar(&backend, "backend", 0, "Inference backend. 0: Auto, 1: Halide language, 2: Intel DL Inference Engine")
 	flag.IntVar(&target, "target", 0, "Target device. 0: CPU, 1: OpenCL, 2: OpenCL half precision, 3: VPU")
 	flag.BoolVar(&publish, "publish", false, "Publish data analytics to a remote server")
@@ -147,36 +153,54 @@ func (p *Perf) String() string {
 	return fmt.Sprintf("Face inference time: %.2f ms, Sentiment inference time: %.2f ms, Pose inference time: %.2f ms", p.FaceNet, p.SentNet, p.PoseNet)
 }
 
-// Result is inference result
+// Status stores machine operator status
+type Status struct {
+	// IsWatching means operator is watching the machine
+	IsWatching bool
+	// IsAngry means operator is angry
+	IsAngry bool
+}
+
+// Operator is machine operator
+type Operator struct {
+	// now is Operator current status
+	now *Status
+	// prev is operator previous status
+	prev *Status
+	// timeStoppedWatching records time when operator stopped watching machine
+	timeStoppedWatching time.Time
+	// timeAngry records time when operator became angry
+	timeStartAngry time.Time
+}
+
+// Result is monitoring computation result returned to main goroutine
 type Result struct {
-	// Watching means operator is watching the machine
-	Watching bool
-	// Angry means operator is angry
-	Angry bool
-	// prevAngry means operator was angry before
-	prevAngry bool
-	// Alert meansh operator has been angry so an alert must be raised
+	// status is machine operator Status
+	status *Status
+	// AlertWatching is used to raise an alert based on operator (not) watching machine
+	AlertWatching bool
+	// Alert is used to raise an alert based on operator (not) being angry whilst operating machine
 	AlertAngry bool
 }
 
 // String implements fmt.Stringer interface for Result
 func (r *Result) String() string {
-	return fmt.Sprintf("Watching %v, Angry: %v", r.Watching, r.Angry)
+	return fmt.Sprintf("Watching %v, Angry: %v", r.status.IsWatching, r.status.IsAngry)
 }
 
 // ToMQTTMessage turns result into MQTT message which can be published to MQTT broker
 func (r *Result) ToMQTTMessage() string {
-	return fmt.Sprintf("{\"Watching\":%v, \"Angry\": %v}", r.Watching, r.Angry)
+	return fmt.Sprintf("{\"Watching\":%v, \"Angry\": %v}", r.status.IsWatching, r.status.IsAngry)
 }
 
 // getPerformanceInfo queries the Inference Engine performance info and returns it as string
-func getPerformanceInfo(faceNet, sentNet, poseNet *gocv.Net, poseSentChecked bool) *Perf {
+func getPerformanceInfo(faceNet, sentNet, poseNet *gocv.Net, opStatusChecked bool) *Perf {
 	freq := gocv.GetTickFrequency() / 1000
 
 	facePerf := faceNet.GetPerfProfile() / freq
 
 	var posePerf, sentPerf float64
-	if poseSentChecked {
+	if opStatusChecked {
 		posePerf = poseNet.GetPerfProfile() / freq
 		sentPerf = sentNet.GetPerfProfile() / freq
 	}
@@ -214,12 +238,13 @@ func messageRunner(doneChan <-chan struct{}, pubChan <-chan *Result, c *MQTTClie
 	return nil
 }
 
-// detectPoseSentiment detects sentiments for each pose of the detected facesin in img regions rectangles
-// It returns a map of poses with detected sentiments
-func detectPoseSentiment(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Rectangle) map[Pose]Sentiment {
-	var watching bool
-	// sentMap maps the counts of each detected face emotion
-	poseSentMap := make(map[Pose]Sentiment)
+// detectStatus detects sentiment and position of the operator working with the machine and returns it
+func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Rectangle) *Status {
+	s := new(Status)
+	// names of neural network layers containg the outputs of face position
+	layers := []string{"angle_y_fc", "angle_p_fc", "angle_r_fc"}
+	// face will store face data
+	var face gocv.Mat
 	// do the sentiment detection here
 	for i := range faces {
 		// make sure the face rect is completely inside the main frame
@@ -227,7 +252,7 @@ func detectPoseSentiment(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []imag
 			continue
 		}
 
-		face := img.Region(faces[i])
+		face = img.Region(faces[i])
 
 		// propagate the detected face forward through pose network
 		poseImg := gocv.NewMat()
@@ -237,10 +262,13 @@ func detectPoseSentiment(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []imag
 
 		// run a forward pass through sentiment network
 		poseNet.SetInput(poseBlob, "")
-		poseRes := poseNet.Forward("")
+		poseRes := poseNet.ForwardLayers(layers)
 
-		// TODO: do something with the result here
-		fmt.Println(watching)
+		// the operator is watching if their head is tilted within a 45 degree angle relative to the shel
+		if (poseRes[0].GetDoubleAt(0, 0) > -22.5 && poseRes[0].GetDoubleAt(0, 0) < 22.5) &&
+			(poseRes[1].GetDoubleAt(0, 0) > -22.5 && poseRes[1].GetDoubleAt(0, 0) < 22.5) {
+			s.IsWatching = true
+		}
 
 		// propagate the detected face forward through sentiment network
 		sentImg := gocv.NewMat()
@@ -257,17 +285,21 @@ func detectPoseSentiment(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []imag
 		// find the most likely mood in returned list of sentiments
 		_, confidence, _, maxLoc := gocv.MinMaxLoc(sentRes)
 		if float64(confidence) > sentConfidence {
-			//TODO: do something here
-			fmt.Println(confidence, maxLoc)
+			if maxLoc.Y == 4 {
+				s.IsAngry = true
+			}
 		}
 
+		// close matrices
 		poseBlob.Close()
-		poseRes.Close()
+		for i, _ := range poseRes {
+			poseRes[i].Close()
+		}
 		sentBlob.Close()
 		sentRes.Close()
 	}
 
-	return poseSentMap
+	return s
 }
 
 // detectFaces detects faces in img and returns them as a slice of rectangles that encapsulates them
@@ -300,7 +332,7 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 // frameRunner reads image frames from framesChan and performs face and sentiment detections on them
 // doneChan is used to receive a signal from the main goroutine to notify frameRunner to stop and return
 func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsChan chan<- *Result,
-	perfChan chan<- *Perf, pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net) error {
+	perfChan chan<- *Perf, pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net, o *Operator) error {
 
 	for {
 		select {
@@ -315,26 +347,63 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 			// detect faces and return them
 			faces := detectFaces(faceNet, &img)
 
-			// poseSentChecked is only set to true if at least one pose sentiment has been detected
-			poseSentChecked := false
+			// statusChecked is only set to true if at least one operator status was detected
+			statusChecked := false
 
-			// detect sentiment from detected faces
-			poseSentMap := detectPoseSentiment(poseNet, sentNet, &img, faces)
+			// detect operator status
+			status := detectStatus(poseNet, sentNet, &img, faces)
 
-			if len(poseSentMap) != 0 {
-				poseSentChecked = true
+			// update Result Operator
+			if status != nil {
+				statusChecked = true
+			}
+			o.now.IsWatching = status.IsWatching
+			o.now.IsAngry = status.IsAngry
+
+			// If oeprator stopped watching record the time
+			if o.prev.IsWatching && !o.now.IsWatching {
+				o.timeStoppedWatching = time.Now()
+			}
+			// if oeprator start being angry record the time
+			if !o.prev.IsAngry && o.now.IsAngry {
+				o.timeStartAngry = time.Now()
+			}
+
+			alertWatching := false
+			// if operator continues not to watch machine and exceeds timeout, set alert
+			if !o.prev.IsWatching && !o.now.IsWatching {
+				elapsed := time.Since(o.timeStoppedWatching)
+				if elapsed > watchTimeout {
+					alertWatching = true
+				}
+			}
+
+			alertAngry := false
+			// if operator remains angry and exceeds timeout, set alert
+			if o.prev.IsAngry && o.now.IsAngry {
+				elapsed := time.Since(o.timeStartAngry)
+				if elapsed > watchTimeout {
+					alertAngry = true
+				}
 			}
 
 			// detection result
-			result := &Result{}
+			result := &Result{
+				status:        status,
+				AlertWatching: alertWatching,
+				AlertAngry:    alertAngry,
+			}
 
 			// send data down the channels
-			perfChan <- getPerformanceInfo(faceNet, sentNet, poseNet, poseSentChecked)
+			perfChan <- getPerformanceInfo(faceNet, sentNet, poseNet, statusChecked)
 			resultsChan <- result
 			if pubChan != nil {
 				pubChan <- result
 			}
 
+			// latest status is now prev status
+			o.prev.IsWatching = status.IsWatching
+			o.prev.IsAngry = status.IsAngry
 			// close image matrices
 			img.Close()
 		}
@@ -503,11 +572,14 @@ func main() {
 		defer p.Disconnect(100)
 	}
 
+	// operator stores operator status
+	operator := new(Operator)
 	// start frameRunner goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errChan <- frameRunner(framesChan, doneChan, resultsChan, perfChan, pubChan, faceNet, sentNet, poseNet)
+		errChan <- frameRunner(framesChan, doneChan, resultsChan, perfChan, pubChan,
+			faceNet, sentNet, poseNet, operator)
 	}()
 
 	// open display window
@@ -554,13 +626,13 @@ monitor:
 		gocv.PutText(&img, fmt.Sprintf("%s", result), image.Point{0, 40},
 			gocv.FontHersheySimplex, 0.5, color.RGBA{0, 0, 0, 0}, 2)
 		// display alert message when operator is not watching machine
-		if !result.Watching {
-			gocv.PutText(&img, alertNotWatching, image.Point{0, 80},
+		if result.AlertWatching {
+			gocv.PutText(&img, alertWatching, image.Point{0, 80},
 				gocv.FontHersheySimplex, 0.5, color.RGBA{255, 0, 0, 0}, 2)
 		}
-		// display alert message when operator is angrily operating machine
+		// display alert message when operator is operating machine angrily
 		if result.AlertAngry {
-			gocv.PutText(&img, alertAngry, image.Point{0, 80},
+			gocv.PutText(&img, alertAngry, image.Point{0, 100},
 				gocv.FontHersheySimplex, 0.5, color.RGBA{255, 0, 0, 0}, 2)
 		}
 		// show the image in the window, and wait 1 millisecond
