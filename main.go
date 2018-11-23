@@ -159,6 +159,8 @@ type Status struct {
 	IsWatching bool
 	// IsAngry means operator is angry
 	IsAngry bool
+	// checked means status was checked in a sense that status detection was successful
+	checked bool
 }
 
 // Operator is machine operator
@@ -194,13 +196,13 @@ func (r *Result) ToMQTTMessage() string {
 }
 
 // getPerformanceInfo queries the Inference Engine performance info and returns it as string
-func getPerformanceInfo(faceNet, sentNet, poseNet *gocv.Net, opStatusChecked bool) *Perf {
+func getPerformanceInfo(faceNet, sentNet, poseNet *gocv.Net, statusChecked bool) *Perf {
 	freq := gocv.GetTickFrequency() / 1000
 
 	facePerf := faceNet.GetPerfProfile() / freq
 
 	var posePerf, sentPerf float64
-	if opStatusChecked {
+	if statusChecked {
 		posePerf = poseNet.GetPerfProfile() / freq
 		sentPerf = sentNet.GetPerfProfile() / freq
 	}
@@ -290,6 +292,7 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 			}
 		}
 
+		s.checked = true
 		// close matrices
 		poseBlob.Close()
 		for i, _ := range poseRes {
@@ -347,43 +350,39 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 			// detect faces and return them
 			faces := detectFaces(faceNet, &img)
 
-			// statusChecked is only set to true if at least one operator status was detected
-			statusChecked := false
-
 			// detect operator status
 			status := detectStatus(poseNet, sentNet, &img, faces)
 
+			// reset alerts and check for new alerts
+			alertWatching, alertAngry := false, false
 			// update Result Operator
-			if status != nil {
-				statusChecked = true
-			}
-			o.now.IsWatching = status.IsWatching
-			o.now.IsAngry = status.IsAngry
+			if status.checked {
+				o.now.IsWatching = status.IsWatching
+				o.now.IsAngry = status.IsAngry
 
-			// If oeprator stopped watching record the time
-			if o.prev.IsWatching && !o.now.IsWatching {
-				o.timeStoppedWatching = time.Now()
-			}
-			// if oeprator start being angry record the time
-			if !o.prev.IsAngry && o.now.IsAngry {
-				o.timeStartAngry = time.Now()
-			}
-
-			alertWatching := false
-			// if operator continues not to watch machine and exceeds timeout, set alert
-			if !o.prev.IsWatching && !o.now.IsWatching {
-				elapsed := time.Since(o.timeStoppedWatching)
-				if elapsed > watchTimeout {
-					alertWatching = true
+				// If oeprator stopped watching record the time
+				if o.prev.IsWatching && !o.now.IsWatching {
+					o.timeStoppedWatching = time.Now()
 				}
-			}
+				// if oeprator start being angry record the time
+				if !o.prev.IsAngry && o.now.IsAngry {
+					o.timeStartAngry = time.Now()
+				}
 
-			alertAngry := false
-			// if operator remains angry and exceeds timeout, set alert
-			if o.prev.IsAngry && o.now.IsAngry {
-				elapsed := time.Since(o.timeStartAngry)
-				if elapsed > watchTimeout {
-					alertAngry = true
+				// if operator continues not to watch machine and exceeds timeout, set alert
+				if !o.prev.IsWatching && !o.now.IsWatching {
+					elapsed := time.Since(o.timeStoppedWatching)
+					if elapsed > watchTimeout {
+						alertWatching = true
+					}
+				}
+
+				// if operator remains angry and exceeds timeout, set alert
+				if o.prev.IsAngry && o.now.IsAngry {
+					elapsed := time.Since(o.timeStartAngry)
+					if elapsed > watchTimeout {
+						alertAngry = true
+					}
 				}
 			}
 
@@ -395,7 +394,7 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 			}
 
 			// send data down the channels
-			perfChan <- getPerformanceInfo(faceNet, sentNet, poseNet, statusChecked)
+			perfChan <- getPerformanceInfo(faceNet, sentNet, poseNet, status.checked)
 			resultsChan <- result
 			if pubChan != nil {
 				pubChan <- result
@@ -574,6 +573,8 @@ func main() {
 
 	// operator stores operator status
 	operator := new(Operator)
+	now, prev := new(Status), new(Status)
+	operator.now, operator.prev = now, prev
 	// start frameRunner goroutine
 	wg.Add(1)
 	go func() {
@@ -584,7 +585,7 @@ func main() {
 
 	// open display window
 	window := gocv.NewWindow(name)
-	window.SetWindowProperty(gocv.WindowPropertyAutosize, gocv.WindowAutosize)
+	window.SetWindowProperty(gocv.WindowPropertyFullscreen, gocv.WindowAutosize)
 	defer window.Close()
 
 	// prepare input image matrix
