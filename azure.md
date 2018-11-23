@@ -1,6 +1,6 @@
 # Building machine operator monitor docker images in Microsoft Azure Cloud
 
-This is a short step by step tutorial about how to build [docker](https://docker.com) image for `machine-operator-monitor-g` application in [Microsoft Azure](https://azure.microsoft.com/) Cloud and make it available in [Azure Container Registry (ACR)](https://docs.microsoft.com/en-us/azure/container-registry/).
+This is a short step by step tutorial about how to build [docker](https://docker.com) image for `machine-operator-monitor-go` application in [Microsoft Azure](https://azure.microsoft.com/) Cloud and make it available in [Azure Container Registry (ACR)](https://docs.microsoft.com/en-us/azure/container-registry/).
 
 ## Prerequisities
 

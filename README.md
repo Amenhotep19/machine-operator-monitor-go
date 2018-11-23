@@ -165,7 +165,7 @@ To then execute the code using one of these sample videos, run the following com
 
 ### Machine to Machine Messaging with MQTT
 
-If you wish to use a MQTT server to publish data, you should set the following environment variables before running the program:
+If you wish to use a MQTT server to publish data, you should set the following environment variables before running the program and use `-publish` flag when launching the program:
 ```
     export MQTT_SERVER=localhost:1883
     export MQTT_CLIENT_ID=cvservice

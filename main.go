@@ -142,7 +142,7 @@ func (p Pose) String() string {
 type Perf struct {
 	// FaceNet stores face detector performance info
 	FaceNet float64
-	// SnetNet stores sentiment detector performance info
+	// SentNet stores sentiment detector performance info
 	SentNet float64
 	// PoseNet stores pose detector performance info
 	PoseNet float64
@@ -181,7 +181,7 @@ type Result struct {
 	status *Status
 	// AlertWatching is used to raise an alert based on operator (not) watching machine
 	AlertWatching bool
-	// Alert is used to raise an alert based on operator (not) being angry whilst operating machine
+	// AlertAngry is used to raise an alert based on operator (not) being angry whilst operating machine
 	AlertAngry bool
 }
 
