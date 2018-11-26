@@ -337,7 +337,7 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 
 // frameRunner reads image frames from framesChan and performs face and sentiment detections on them
 // doneChan is used to receive a signal from the main goroutine to notify frameRunner to stop and return
-func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsChan chan<- *Result,
+func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan chan<- *Result,
 	perfChan chan<- *Perf, pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net) error {
 
 	// operator stores operator status
@@ -352,7 +352,7 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 		case frame := <-framesChan:
 			// let's make a copy of the original
 			img := gocv.NewMat()
-			frame.CopyTo(&img)
+			frame.img.CopyTo(&img)
 
 			// detect faces and return them
 			faces := detectFaces(faceNet, &img)
@@ -512,6 +512,12 @@ func NewMQTTPublisher() (*MQTTClient, error) {
 	return c, nil
 }
 
+// frame ise used to send video frames and program configuration to upstream goroutines
+type frame struct {
+	// img is image frame
+	img *gocv.Mat
+}
+
 func main() {
 	// parse cli flags
 	if err := parseCliFlags(); err != nil {
@@ -549,7 +555,7 @@ func main() {
 	defer vc.Close()
 
 	// frames channel provides the source of images to process
-	framesChan := make(chan *gocv.Mat, 1)
+	framesChan := make(chan *frame, 1)
 	// errChan is a channel used to capture program errors
 	errChan := make(chan error, 2)
 	// doneChan is used to signal goroutines they need to stop
@@ -613,7 +619,7 @@ monitor:
 			continue
 		}
 
-		framesChan <- &img
+		framesChan <- &frame{img: &img}
 
 		select {
 		case sig := <-sigChan:
