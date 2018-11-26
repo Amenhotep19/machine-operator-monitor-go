@@ -60,6 +60,8 @@ var (
 	publish bool
 	// rate is number of seconds between analytics are collected and sent to a remote server
 	rate int
+	// delay is video playback delay
+	delay float64
 )
 
 func init() {
@@ -80,6 +82,7 @@ func init() {
 	flag.IntVar(&target, "target", 0, "Target device. 0: CPU, 1: OpenCL, 2: OpenCL half precision, 3: VPU")
 	flag.BoolVar(&publish, "publish", false, "Publish data analytics to a remote server")
 	flag.IntVar(&rate, "rate", 1, "Number of seconds between analytics are sent to a remote server")
+	flag.Float64Var(&delay, "delay", 5.0, "Video playback delay")
 }
 
 // Sentiment is shopper sentiment
@@ -335,7 +338,11 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 // frameRunner reads image frames from framesChan and performs face and sentiment detections on them
 // doneChan is used to receive a signal from the main goroutine to notify frameRunner to stop and return
 func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsChan chan<- *Result,
-	perfChan chan<- *Perf, pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net, o *Operator) error {
+	perfChan chan<- *Perf, pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net) error {
+
+	// operator stores operator status
+	op := new(Operator)
+	op.now, op.prev = new(Status), new(Status)
 
 	for {
 		select {
@@ -357,29 +364,29 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 			alertWatching, alertAngry := false, false
 			// update Result Operator
 			if status.checked {
-				o.now.IsWatching = status.IsWatching
-				o.now.IsAngry = status.IsAngry
+				op.now.IsWatching = status.IsWatching
+				op.now.IsAngry = status.IsAngry
 
 				// If oeprator stopped watching record the time
-				if o.prev.IsWatching && !o.now.IsWatching {
-					o.timeStoppedWatching = time.Now()
+				if op.prev.IsWatching && !op.now.IsWatching {
+					op.timeStoppedWatching = time.Now()
 				}
 				// if oeprator start being angry record the time
-				if !o.prev.IsAngry && o.now.IsAngry {
-					o.timeStartAngry = time.Now()
+				if !op.prev.IsAngry && op.now.IsAngry {
+					op.timeStartAngry = time.Now()
 				}
 
 				// if operator continues not to watch machine and exceeds timeout, set alert
-				if !o.prev.IsWatching && !o.now.IsWatching {
-					elapsed := time.Since(o.timeStoppedWatching)
+				if !op.prev.IsWatching && !op.now.IsWatching {
+					elapsed := time.Since(op.timeStoppedWatching)
 					if elapsed > watchTimeout {
 						alertWatching = true
 					}
 				}
 
 				// if operator remains angry and exceeds timeout, set alert
-				if o.prev.IsAngry && o.now.IsAngry {
-					elapsed := time.Since(o.timeStartAngry)
+				if op.prev.IsAngry && op.now.IsAngry {
+					elapsed := time.Since(op.timeStartAngry)
 					if elapsed > watchTimeout {
 						alertAngry = true
 					}
@@ -401,8 +408,8 @@ func frameRunner(framesChan <-chan *gocv.Mat, doneChan <-chan struct{}, resultsC
 			}
 
 			// latest status is now prev status
-			o.prev.IsWatching = status.IsWatching
-			o.prev.IsAngry = status.IsAngry
+			op.prev.IsWatching = status.IsWatching
+			op.prev.IsAngry = status.IsAngry
 			// close image matrices
 			img.Close()
 		}
@@ -461,14 +468,18 @@ func NewInferModel(model, config string, backend, target int) (*gocv.Net, error)
 }
 
 // NewCapture creates new video capture from input or camera backend if input is empty and returns it.
+// If input is not empty, NewCapture adjusts delay parameter so video playback matches FPS in the video file.
 // It fails with error if it either can't open the input video file or the video device
-func NewCapture(input string, deviceID int) (*gocv.VideoCapture, error) {
+func NewCapture(input string, deviceID int, delay *float64) (*gocv.VideoCapture, error) {
 	if input != "" {
 		// open video file
 		vc, err := gocv.VideoCaptureFile(input)
 		if err != nil {
 			return nil, err
 		}
+
+		fps := vc.Get(gocv.VideoCaptureFPS)
+		*delay = 1000 / fps
 
 		return vc, nil
 	}
@@ -530,7 +541,7 @@ func main() {
 	}
 
 	// create new video capture
-	vc, err := NewCapture(input, deviceID)
+	vc, err := NewCapture(input, deviceID, &delay)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating new video capture: %v\n", err)
 		os.Exit(1)
@@ -571,16 +582,12 @@ func main() {
 		defer p.Disconnect(100)
 	}
 
-	// operator stores operator status
-	operator := new(Operator)
-	now, prev := new(Status), new(Status)
-	operator.now, operator.prev = now, prev
 	// start frameRunner goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		errChan <- frameRunner(framesChan, doneChan, resultsChan, perfChan, pubChan,
-			faceNet, sentNet, poseNet, operator)
+			faceNet, sentNet, poseNet)
 	}()
 
 	// open display window
@@ -640,7 +647,7 @@ monitor:
 		window.IMShow(img)
 
 		// exit when ESC key is pressed
-		if window.WaitKey(1) == 27 {
+		if window.WaitKey(int(delay)) >= 0 {
 			break monitor
 		}
 	}
