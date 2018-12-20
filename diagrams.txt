@@ -36,6 +36,29 @@ M[Send MQTT messages to server with stats]-- optional -->S
 end
 end
 
+graph TD
+subgraph cloud
+S[MQTT Server]
+end
+subgraph local
+subgraph Frame goroutine
+Q[Get next available image frame from frame channel]-->F[Look for faces using DNN]
+F-->SN[Check sentiment using DNN]
+SN-->SP[Check pose using DNN]
+SP-->U[Update display results stats channel]
+U-->UP[Update publish results channel *OPTIONAL]
+end
+subgraph Main goroutine
+C[Capture frames]-->MQ[Add to frame channel]
+MQ-->W[Window with display including results stats]
+DC[Get stats from display results channel]-->W
+end
+subgraph Messaging goroutine *OPTIONAL
+SC[Get stats from publish results channel]-->M
+M[Send MQTT messages to server with results stats]-->S
+end
+end
+
 graph LR
 subgraph Model creation
 A[Define model architecture] -->|train|B[Trained model]
