@@ -1,3 +1,26 @@
+/*
+* Copyright (c) 2018 Intel Corporation.
+*
+* Permission is hereby granted, free of charge, to any person obtaining
+* a copy of this software and associated documentation files (the
+* "Software"), to deal in the Software without restriction, including
+* without limitation the rights to use, copy, modify, merge, publish,
+* distribute, sublicense, and/or sell copies of the Software, and to
+* permit persons to whom the Software is furnished to do so, subject to
+* the following conditions:
+*
+* The above copyright notice and this permission notice shall be
+* included in all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+* NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+* LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+* OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+* WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 package main
 
 import (
@@ -85,11 +108,11 @@ func init() {
 	flag.Float64Var(&delay, "delay", 5.0, "Video playback delay")
 }
 
-// Sentiment is shopper sentiment
+// Sentiment is operator sentiment
 type Sentiment int
 
 const (
-	// NEUTRAL is neutral emotion shopper
+	// NEUTRAL is neutral emotion operator
 	NEUTRAL Sentiment = iota + 1
 	// HAPPY is for detecting happy emotion
 	HAPPY
@@ -237,12 +260,10 @@ func messageRunner(doneChan <-chan struct{}, pubChan <-chan *Result, c *MQTTClie
 		case <-pubChan:
 			// we discard messages in between ticker times
 		case <-doneChan:
-			fmt.Printf("Stopping messageRunner: received stop sginal\n")
+			fmt.Printf("Stopping messageRunner: received stop signal\n")
 			return nil
 		}
 	}
-
-	return nil
 }
 
 // detectStatus detects sentiment and position of the operator working with the machine and returns it
@@ -298,7 +319,8 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		}
 
 		s.checked = true
-		// close matrices
+
+		// close Mats
 		poseBlob.Close()
 		for i, _ := range poseRes {
 			poseRes[i].Close()
@@ -354,10 +376,8 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 	for {
 		select {
 		case <-doneChan:
-			fmt.Printf("Stopping frameRunner: received stop sginal\n")
-			// close results channel
+			fmt.Printf("Stopping frameRunner: received stop signal\n")
 			close(resultsChan)
-			// close publish channel
 			if pubChan != nil {
 				close(pubChan)
 			}
@@ -431,8 +451,6 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 			img.Close()
 		}
 	}
-
-	return nil
 }
 
 func parseCliFlags() error {
@@ -665,7 +683,7 @@ monitor:
 		window.IMShow(img)
 
 		// exit when ESC key is pressed
-		if window.WaitKey(int(delay)) >= 0 {
+		if window.WaitKey(int(delay)) == 27 {
 			break monitor
 		}
 	}
