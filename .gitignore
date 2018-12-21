@@ -4,3 +4,4 @@ build/
 *.mp4
 resources/
 vendor/
+*.swp

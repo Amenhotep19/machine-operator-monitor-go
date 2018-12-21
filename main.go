@@ -273,7 +273,7 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 	layers := []string{"angle_y_fc", "angle_p_fc", "angle_r_fc"}
 	// face will store face data
 	var face gocv.Mat
-	// do the sentiment detection here
+	// do the sentiment and pose detection here
 	for i := range faces {
 		// make sure the face rect is completely inside the main frame
 		if !faces[i].In(image.Rect(0, 0, img.Cols(), img.Rows())) {
@@ -292,9 +292,18 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		poseNet.SetInput(poseBlob, "")
 		poseRes := poseNet.ForwardLayers(layers)
 
-		// the operator is watching if their head is tilted within a 45 degree angle relative to the shel
+		fmt.Printf("PoseRes[0]: %T\n", poseRes[0])
+		rows, cols := poseRes[0].Cols(), poseRes[0].Rows()
+		fmt.Println("Mat[0] rows:", rows, "Mat cols:", cols)
+		fmt.Printf("PoseRes[1]: %T\n", poseRes[1])
+		rows, cols = poseRes[1].Cols(), poseRes[1].Rows()
+		fmt.Println("Mat[1] rows:", rows, "Mat cols:", cols)
+		fmt.Println(poseRes[0].GetDoubleAt(0, 0), poseRes[1].GetDoubleAt(0, 0))
+
+		// the operator is watching if their head is tilted within a 45 degree angle relative to the shelf
 		if (poseRes[0].GetDoubleAt(0, 0) > -22.5 && poseRes[0].GetDoubleAt(0, 0) < 22.5) &&
 			(poseRes[1].GetDoubleAt(0, 0) > -22.5 && poseRes[1].GetDoubleAt(0, 0) < 22.5) {
+			fmt.Println("IS WATCHING")
 			s.IsWatching = true
 		}
 
@@ -314,6 +323,7 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		_, confidence, _, maxLoc := gocv.MinMaxLoc(sentRes)
 		if float64(confidence) > sentConfidence {
 			if maxLoc.Y == 4 {
+				fmt.Println("IS ANGRY")
 				s.IsAngry = true
 			}
 		}
@@ -348,6 +358,7 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 	for i := 0; i < results.Total(); i += 7 {
 		confidence := results.GetFloatAt(0, i+2)
 		if float64(confidence) > faceConfidence {
+			fmt.Println("CONFIDENCE:", confidence)
 			left := int(results.GetFloatAt(0, i+3) * float32(img.Cols()))
 			top := int(results.GetFloatAt(0, i+4) * float32(img.Rows()))
 			right := int(results.GetFloatAt(0, i+5) * float32(img.Cols()))
@@ -364,6 +375,7 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan chan<- *Result,
 	pubChan chan<- *Result, faceNet, sentNet, poseNet *gocv.Net) error {
 
+	result := new(Result)
 	// frame is image frame
 	// we want to avoid continuous allocation that lead to GC pauses
 	frame := new(frame)
@@ -371,7 +383,6 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 	op := new(Operator)
 	op.now, op.prev = new(Status), new(Status)
 	// perf is inference engine performance
-	perf := new(Perf)
 
 	for {
 		select {
@@ -396,47 +407,54 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 			// detect operator status
 			status := detectStatus(poseNet, sentNet, &img, faces)
 
-			// reset alerts and check for new alerts
-			alertWatching, alertAngry := false, false
 			// update Result Operator
 			if status.checked {
+				fmt.Println("CHECKED", "ANGRY:", status.IsAngry, "WATCHING:", status.IsWatching)
 				op.now.IsWatching = status.IsWatching
 				op.now.IsAngry = status.IsAngry
 
-				// If oeprator stopped watching record the time
+				if op.now.IsWatching {
+					result.AlertWatching = false
+				}
+
+				if !op.now.IsAngry {
+					result.AlertAngry = false
+				}
+
+				// If operator stopped watching record the start time
+				// was watching but isnt watching now
 				if op.prev.IsWatching && !op.now.IsWatching {
 					op.timeStoppedWatching = time.Now()
 				}
-				// if oeprator start being angry record the time
+
+				// if operator starts being angry record the start time
+				// wasnt angry but is angry now
 				if !op.prev.IsAngry && op.now.IsAngry {
 					op.timeStartAngry = time.Now()
 				}
 
 				// if operator continues not to watch machine and exceeds timeout, set alert
-				if !op.prev.IsWatching && !op.now.IsWatching {
+				if !result.AlertWatching && !op.now.IsWatching {
 					elapsed := time.Since(op.timeStoppedWatching)
 					if elapsed > watchTimeout {
-						alertWatching = true
+						result.AlertWatching = true
 					}
 				}
 
 				// if operator remains angry and exceeds timeout, set alert
-				if op.prev.IsAngry && op.now.IsAngry {
+				if !result.AlertAngry && op.now.IsAngry {
 					elapsed := time.Since(op.timeStartAngry)
 					if elapsed > watchTimeout {
-						alertAngry = true
+						result.AlertAngry = true
 					}
 				}
 			}
 
-			perf = getPerformanceInfo(faceNet, sentNet, poseNet, status.checked)
-			// detection result
-			result := &Result{
-				status:        status,
-				AlertWatching: alertWatching,
-				AlertAngry:    alertAngry,
-				Perf:          perf,
+			if status.checked {
+				result.Perf = getPerformanceInfo(faceNet, sentNet, poseNet, status.checked)
 			}
+
+			result.status = status
 
 			// send data down the channels
 			resultsChan <- result
@@ -445,8 +463,8 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 			}
 
 			// latest status is now prev status
-			op.prev.IsWatching = status.IsWatching
-			op.prev.IsAngry = status.IsAngry
+			op.prev.IsWatching = op.now.IsWatching
+			op.prev.IsAngry = op.now.IsAngry
 			// close image matrices
 			img.Close()
 		}
