@@ -281,7 +281,6 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		}
 
 		face = img.Region(faces[i])
-		fmt.Println("FACE RECT:", faces[i], "FACE ROWS:", face.Rows(), "FACE COLS:", face.Cols())
 
 		// propagate the detected face forward through pose network
 		poseImg := gocv.NewMat()
@@ -293,12 +292,9 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		poseNet.SetInput(poseBlob, "")
 		poseRes := poseNet.ForwardLayers(layers)
 
-		fmt.Printf("RES[0]=%v, RES[1]=%v\n", poseRes[0].GetFloatAt(0, 0), poseRes[1].GetFloatAt(0, 0))
-
 		// the operator is watching if their head is tilted within a 45 degree angle relative to the shelf
 		if (poseRes[0].GetFloatAt(0, 0) > -22.5 && poseRes[0].GetFloatAt(0, 0) < 22.5) &&
 			(poseRes[1].GetFloatAt(0, 0) > -22.5 && poseRes[1].GetFloatAt(0, 0) < 22.5) {
-			fmt.Println("IS WATCHING")
 			s.IsWatching = true
 		}
 
@@ -317,9 +313,7 @@ func detectStatus(poseNet, sentNet *gocv.Net, img *gocv.Mat, faces []image.Recta
 		// find the most likely mood in returned list of sentiments
 		_, confidence, _, maxLoc := gocv.MinMaxLoc(sentRes)
 		if float64(confidence) > sentConfidence {
-			fmt.Println("SENT CONFIDENCE:", confidence)
 			if maxLoc.Y == 4 {
-				fmt.Println("IS ANGRY")
 				s.IsAngry = true
 			}
 		}
@@ -354,7 +348,6 @@ func detectFaces(net *gocv.Net, img *gocv.Mat) []image.Rectangle {
 	for i := 0; i < results.Total(); i += 7 {
 		confidence := results.GetFloatAt(0, i+2)
 		if float64(confidence) > faceConfidence {
-			fmt.Println("FACE CONFIDENCE:", confidence)
 			left := int(results.GetFloatAt(0, i+3) * float32(img.Cols()))
 			top := int(results.GetFloatAt(0, i+4) * float32(img.Rows()))
 			right := int(results.GetFloatAt(0, i+5) * float32(img.Cols()))
@@ -378,7 +371,6 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 	// operator stores operator status
 	op := new(Operator)
 	op.now, op.prev = new(Status), new(Status)
-	// perf is inference engine performance
 
 	for {
 		select {
@@ -405,7 +397,6 @@ func frameRunner(framesChan <-chan *frame, doneChan <-chan struct{}, resultsChan
 
 			// update Result Operator
 			if status.checked {
-				fmt.Println("CHECKED", "ANGRY:", status.IsAngry, "WATCHING:", status.IsWatching)
 				op.now.IsWatching = status.IsWatching
 				op.now.IsAngry = status.IsAngry
 
