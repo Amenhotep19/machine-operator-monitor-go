@@ -88,9 +88,9 @@ The application uses a video source, such as a camera, to grab frames, and then 
 - The second neural network is then used to determine if the machine operator is watching the machine (i.e., head position facing camera).
 - Finally, if the proper head position has been detected, the third neural network performs facial analysis to determine the emotion of the detected operator face.
 
-The data can then optionally be sent to a MQTT machine to machine messaging server, as part of a industrial data analytics system.
+Optionally data can be sent to a MQTT machine to machine messaging server, as part of an industrial data analytics system.
 
-The DNN models used in this application are Intel® optimized models that are part of the OpenVINO™ toolkit.
+This application uses a DNN model optimized for Intel® architecture. The model is part of the Intel® Distribution of OpenVINO™ toolkit.
 
 Find the optimized models in these locations:
 
