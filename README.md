@@ -264,3 +264,7 @@ xhost -local:docker
 ### Azure
 
 If you'd like to know how you can take advantage of more advanced build system provided by [Microsoft Azure Cloud](https://azure.microsoft.com/), please check out the Azure guide [here](./azure.md). Following the steps in the guide you can build a Docker container and push it into Azure Container Registry to make it available online.
+
+## Related Reference Implementations
+
+[Machine Operator Monitor CPP]https://github.com/intel-iot-devkit/machine-operator-monitor-cpp
