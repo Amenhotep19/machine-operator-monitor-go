@@ -261,6 +261,6 @@ docker run -v ${PWD}/resources:/resources -v /tmp/.X11-unix:/tmp/.X11-unix -e DI
 xhost -local:docker
 ```
 
-### Azure*
+### Microsoft Azure*
 
 To take advantage of a more advanced build system provided by [Microsoft Azure Cloud](https://azure.microsoft.com/), see the Azure guide [here](./azure.md). Following the steps in the guide to build a Docker container and push it into Azure Container Registry to make it available online.
